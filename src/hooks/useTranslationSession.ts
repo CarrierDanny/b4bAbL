@@ -1,60 +1,142 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { TranslationSession, Message, Language } from '../types';
+import { Message, Language } from '../types';
 import { api } from '../services/api';
 
+interface SessionConfig {
+  userA: string;
+  userB: string;
+  langA: string;
+  langB: string;
+  langCodeA?: string;
+  langCodeB?: string;
+}
+
 interface UseTranslationSessionReturn {
-  session: TranslationSession | null;
+  sessionCode: string | null;
+  config: SessionConfig | null;
   messages: Message[];
   isConnected: boolean;
   isLoading: boolean;
   error: string | null;
-  connect: (userName: string, language: Language) => Promise<void>;
+  myRole: 'A' | 'B' | null;
+  connect: (sessionCode: string, userName: string, language: Language, isCreator: boolean) => Promise<void>;
   disconnect: () => void;
   sendMessage: (text: string) => Promise<void>;
-  refreshMessages: () => Promise<void>;
 }
 
-export function useTranslationSession(sessionId?: string): UseTranslationSessionReturn {
-  const [session, setSession] = useState<TranslationSession | null>(null);
+export function useTranslationSession(): UseTranslationSessionReturn {
+  const [sessionCode, setSessionCode] = useState<string | null>(null);
+  const [config, setConfig] = useState<SessionConfig | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [myRole, setMyRole] = useState<'A' | 'B' | null>(null);
 
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
-  const lastMessageIdRef = useRef<string | null>(null);
+  const lastRowRef = useRef<number>(1);
+  const userNameRef = useRef<string>('');
+  const userLanguageRef = useRef<Language>('en');
 
   // Connect to a session
-  const connect = useCallback(async (userName: string, language: Language) => {
+  const connect = useCallback(async (
+    code: string,
+    userName: string,
+    language: Language,
+    isCreator: boolean
+  ) => {
     setIsLoading(true);
     setError(null);
+    userNameRef.current = userName;
+    userLanguageRef.current = language;
 
     try {
-      // If sessionId provided, join existing session
-      // Otherwise create new quick session
-      const newSession: TranslationSession = sessionId
-        ? await api.getSession(sessionId)
-        : {
-            id: `session_${Date.now()}`,
-            participants: [{ name: userName, language, role: 'A' }],
-            messages: [],
-            createdAt: new Date().toISOString(),
-            isActive: true,
-          };
+      if (isCreator) {
+        // Create new session
+        const result = await api.createSession(userName, language, code);
+        if (result.error) {
+          throw new Error(result.error);
+        }
+        setSessionCode(result.sessionCode);
+        setMyRole('A');
+        setConfig({
+          userA: userName,
+          userB: 'Waiting...',
+          langA: language,
+          langB: 'es',
+        });
+      } else {
+        // Join existing session
+        const result = await api.joinSession(code, userName, language);
+        if (result.error) {
+          throw new Error(result.error);
+        }
+        setSessionCode(code);
+        setMyRole('B');
+        if (result.config) {
+          setConfig({
+            userA: result.config.userA,
+            userB: userName,
+            langA: result.config.langA,
+            langB: result.config.langB,
+          });
+        }
+      }
 
-      setSession(newSession);
-      setMessages(newSession.messages || []);
       setIsConnected(true);
+      lastRowRef.current = 1;
 
-      // Start polling for new messages
-      startPolling(newSession.id, userName);
+      // Start polling for messages
+      startPolling(code);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to connect');
+      const message = err instanceof Error ? err.message : 'Failed to connect';
+      setError(message);
       setIsConnected(false);
     } finally {
       setIsLoading(false);
     }
-  }, [sessionId]);
+  }, []);
+
+  // Start polling for messages
+  const startPolling = useCallback((code: string) => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+    }
+
+    // Initial fetch
+    fetchMessages(code);
+
+    // Poll every 2 seconds
+    pollingRef.current = setInterval(() => {
+      fetchMessages(code);
+    }, 2000);
+  }, []);
+
+  // Fetch messages from the server
+  const fetchMessages = useCallback(async (code: string) => {
+    try {
+      const response = await api.getMessagesWithMeta(
+        code,
+        userNameRef.current,
+        1 // Always get all messages to ensure we have the full conversation
+      );
+
+      if (response.messages && response.messages.length > 0) {
+        setMessages(response.messages);
+        lastRowRef.current = response.lastRow;
+      }
+
+      // Update config if provided
+      if (response.config) {
+        setConfig(prev => ({
+          ...prev,
+          ...response.config,
+        }));
+      }
+    } catch (err) {
+      console.error('Failed to fetch messages:', err);
+    }
+  }, []);
 
   // Disconnect from session
   const disconnect = useCallback(() => {
@@ -63,95 +145,35 @@ export function useTranslationSession(sessionId?: string): UseTranslationSession
       pollingRef.current = null;
     }
     setIsConnected(false);
-    setSession(null);
+    setSessionCode(null);
+    setConfig(null);
     setMessages([]);
+    setMyRole(null);
+    lastRowRef.current = 1;
   }, []);
 
   // Send a message
   const sendMessage = useCallback(async (text: string) => {
-    if (!session || !isConnected) return;
-
-    const userName = session.participants[0]?.name || 'Guest';
-    const userLanguage = session.participants[0]?.language || 'en';
-
-    const newMessage: Message = {
-      id: `msg_${Date.now()}`,
-      from: userName,
-      originalText: text,
-      translatedText: text, // Would be translated by backend
-      fromLanguage: userLanguage,
-      toLanguage: 'en', // Target language
-      timestamp: new Date().toISOString(),
-    };
-
-    // Optimistically add message
-    setMessages((prev) => [...prev, newMessage]);
+    if (!sessionCode || !isConnected || !myRole) return;
 
     try {
-      // Send to backend
-      await api.sendMessage(session.id, {
+      const result = await api.sendMessage(sessionCode, {
         text,
-        from: userName,
-        language: userLanguage,
+        from: userNameRef.current,
+        language: userLanguageRef.current,
+        role: myRole,
       });
+
+      if (result.error) {
+        throw new Error(result.error);
+      }
+
+      // Immediately fetch messages to show the sent message
+      await fetchMessages(sessionCode);
     } catch (err) {
-      // Remove optimistic message on error
-      setMessages((prev) => prev.filter((m) => m.id !== newMessage.id));
       setError(err instanceof Error ? err.message : 'Failed to send message');
     }
-  }, [session, isConnected]);
-
-  // Refresh messages
-  const refreshMessages = useCallback(async () => {
-    if (!session) return;
-
-    try {
-      const updatedMessages = await api.getMessages(
-        session.id,
-        session.participants[0]?.name || '',
-        lastMessageIdRef.current || undefined
-      );
-
-      if (updatedMessages.length > 0) {
-        setMessages((prev) => {
-          const existingIds = new Set(prev.map((m) => m.id));
-          const newMessages = updatedMessages.filter((m) => !existingIds.has(m.id));
-          return [...prev, ...newMessages];
-        });
-        lastMessageIdRef.current = updatedMessages[updatedMessages.length - 1].id;
-      }
-    } catch (err) {
-      console.error('Failed to refresh messages:', err);
-    }
-  }, [session]);
-
-  // Start polling for messages
-  const startPolling = useCallback((sessionId: string, userName: string) => {
-    if (pollingRef.current) {
-      clearInterval(pollingRef.current);
-    }
-
-    pollingRef.current = setInterval(async () => {
-      try {
-        const newMessages = await api.getMessages(
-          sessionId,
-          userName,
-          lastMessageIdRef.current || undefined
-        );
-
-        if (newMessages.length > 0) {
-          setMessages((prev) => {
-            const existingIds = new Set(prev.map((m) => m.id));
-            const uniqueNew = newMessages.filter((m) => !existingIds.has(m.id));
-            return [...prev, ...uniqueNew];
-          });
-          lastMessageIdRef.current = newMessages[newMessages.length - 1].id;
-        }
-      } catch (err) {
-        console.error('Polling error:', err);
-      }
-    }, 3000); // Poll every 3 seconds
-  }, []);
+  }, [sessionCode, isConnected, myRole, fetchMessages]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -163,15 +185,16 @@ export function useTranslationSession(sessionId?: string): UseTranslationSession
   }, []);
 
   return {
-    session,
+    sessionCode,
+    config,
     messages,
     isConnected,
     isLoading,
     error,
+    myRole,
     connect,
     disconnect,
     sendMessage,
-    refreshMessages,
   };
 }
 

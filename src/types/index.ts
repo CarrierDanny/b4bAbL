@@ -61,6 +61,7 @@ export interface Participant {
 
 export interface Message {
   id: string;
+  row?: number;
   from: string;
   originalText: string;
   translatedText: string;
@@ -68,6 +69,7 @@ export interface Message {
   toLanguage: Language;
   timestamp: string;
   audioUrl?: string;
+  side?: 'A' | 'B';
 }
 
 // Audio Queue Types

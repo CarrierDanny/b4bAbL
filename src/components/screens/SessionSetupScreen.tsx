@@ -69,12 +69,12 @@ export default function SessionSetupScreen() {
     }
 
     storage.setLastSession(sessionId.trim().toUpperCase());
-    navigate(`/translate?session=${sessionId.trim().toUpperCase()}`);
+    navigate(`/translate?session=${sessionId.trim().toUpperCase()}&creator=false`);
   };
 
   // Start the created session
   const handleStartSession = () => {
-    navigate(`/translate?session=${generatedSessionId}`);
+    navigate(`/translate?session=${generatedSessionId}&creator=true`);
   };
 
   // Copy session ID to clipboard

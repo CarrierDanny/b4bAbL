@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, ArrowLeft, Volume2, VolumeX, Users } from 'lucide-react';
-import { StoneBackground, Header } from '../layout';
+import { Send, ArrowLeft, Volume2, VolumeX, Users, Copy, Check } from 'lucide-react';
+import { StoneBackground } from '../layout';
 import { StoneButton, StoneInput, StoneTablet } from '../ui';
-import { Message, Language, SUPPORTED_LANGUAGES } from '../../types';
+import { Message } from '../../types';
 import { storage } from '../../services/storage';
 import { useTranslationSession } from '../../hooks/useTranslationSession';
 
@@ -46,24 +46,28 @@ function MessageBubble({ message, isOwn }: MessageBubbleProps) {
 export default function TranslationScreen() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const mode = searchParams.get('mode') || 'quick';
-  const sessionId = searchParams.get('session');
+  const sessionCodeParam = searchParams.get('session');
+  const isCreator = searchParams.get('creator') === 'true';
 
   const [inputText, setInputText] = useState('');
   const [audioEnabled, setAudioEnabled] = useState(storage.getAudioEnabled());
+  const [copied, setCopied] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const userName = storage.getUserName() || 'Guest';
   const userLanguage = storage.getUserLanguage() || 'en';
 
   const {
-    session,
+    sessionCode,
+    config,
     messages,
     isConnected,
     isLoading,
-    sendMessage,
+    error,
+    myRole,
     connect,
-  } = useTranslationSession(sessionId || undefined);
+    sendMessage,
+  } = useTranslationSession();
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
@@ -72,14 +76,13 @@ export default function TranslationScreen() {
 
   // Connect on mount
   useEffect(() => {
-    if (!session && mode === 'quick') {
-      connect(userName, userLanguage);
+    if (sessionCodeParam && !isConnected && !isLoading) {
+      connect(sessionCodeParam, userName, userLanguage, isCreator);
     }
-  }, [session, mode, userName, userLanguage, connect]);
+  }, [sessionCodeParam, isConnected, isLoading, userName, userLanguage, isCreator, connect]);
 
   const handleSend = async () => {
     if (!inputText.trim()) return;
-
     await sendMessage(inputText.trim());
     setInputText('');
   };
@@ -97,9 +100,29 @@ export default function TranslationScreen() {
     storage.setAudioEnabled(newValue);
   };
 
-  const getLanguageName = (code: Language) => {
-    return SUPPORTED_LANGUAGES.find((l) => l.code === code)?.name || code;
+  const handleCopyCode = async () => {
+    if (sessionCode) {
+      await navigator.clipboard.writeText(sessionCode);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   };
+
+  // Redirect if no session code
+  if (!sessionCodeParam) {
+    return (
+      <StoneBackground>
+        <div className="min-h-screen flex items-center justify-center p-4">
+          <StoneTablet className="max-w-sm text-center">
+            <p className="font-crimson text-stone-600 mb-4">No session code provided</p>
+            <StoneButton onClick={() => navigate('/session')}>
+              Create or Join Session
+            </StoneButton>
+          </StoneTablet>
+        </div>
+      </StoneBackground>
+    );
+  }
 
   return (
     <StoneBackground showDust={false}>
@@ -120,11 +143,13 @@ export default function TranslationScreen() {
                 <p className="font-crimson text-stone-400 text-sm">
                   {isConnected ? (
                     <span className="flex items-center gap-1">
-                      <span className="w-2 h-2 bg-green-400 rounded-full" />
-                      Connected
+                      <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
+                      Connected as {myRole === 'A' ? 'Host' : 'Guest'}
                     </span>
-                  ) : (
+                  ) : isLoading ? (
                     'Connecting...'
+                  ) : (
+                    'Disconnected'
                   )}
                 </p>
               </div>
@@ -142,29 +167,42 @@ export default function TranslationScreen() {
                   <VolumeX className="text-stone-400" size={20} />
                 )}
               </button>
-              <div className="px-3 py-1 bg-stone-600/50 rounded-lg">
-                <span className="font-crimson text-stone-200 text-sm">
-                  {getLanguageName(userLanguage)}
-                </span>
-              </div>
             </div>
           </div>
         </header>
 
-        {/* Session Info */}
-        {session && (
-          <div className="bg-stone-300/50 px-4 py-2 border-b border-stone-400/30">
-            <div className="max-w-4xl mx-auto flex items-center justify-between text-sm">
-              <div className="flex items-center gap-2 text-stone-600">
-                <Users size={16} />
-                <span className="font-crimson">
-                  {session.participants.map((p) => p.name).join(' & ')}
-                </span>
-              </div>
-              <span className="font-crimson text-stone-500">
-                Session: {session.id}
+        {/* Session Info Bar */}
+        <div className="bg-stone-300/50 px-4 py-2 border-b border-stone-400/30">
+          <div className="max-w-4xl mx-auto flex items-center justify-between text-sm">
+            <div className="flex items-center gap-2 text-stone-600">
+              <Users size={16} />
+              <span className="font-crimson">
+                {config ? `${config.userA} & ${config.userB}` : 'Waiting for partner...'}
               </span>
             </div>
+            <div className="flex items-center gap-2">
+              <span className="font-cinzel text-stone-500 text-xs">
+                Room: <span className="font-bold tracking-wider">{sessionCodeParam}</span>
+              </span>
+              <button
+                onClick={handleCopyCode}
+                className="p-1 rounded hover:bg-stone-400/30 transition-colors"
+                aria-label="Copy room code"
+              >
+                {copied ? (
+                  <Check className="text-green-600" size={14} />
+                ) : (
+                  <Copy className="text-stone-500" size={14} />
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Error Banner */}
+        {error && (
+          <div className="bg-red-100 border-b border-red-300 px-4 py-2">
+            <p className="font-crimson text-red-700 text-sm text-center">{error}</p>
           </div>
         )}
 
@@ -172,21 +210,41 @@ export default function TranslationScreen() {
         <main className="flex-1 overflow-y-auto px-4 py-4">
           <div className="max-w-4xl mx-auto">
             {isLoading && messages.length === 0 ? (
-              <div className="flex items-center justify-center h-full">
+              <div className="flex items-center justify-center h-full py-20">
                 <motion.div
                   className="font-crimson text-stone-500 italic"
                   animate={{ opacity: [0.5, 1, 0.5] }}
                   transition={{ duration: 1.5, repeat: Infinity }}
                 >
-                  Loading messages...
+                  Connecting to session...
                 </motion.div>
               </div>
             ) : messages.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full text-center py-12">
+              <div className="flex flex-col items-center justify-center text-center py-12">
                 <StoneTablet className="max-w-sm">
-                  <p className="font-crimson text-stone-600 italic">
-                    No messages yet. Start the conversation by typing below.
+                  <p className="font-crimson text-stone-600 italic mb-4">
+                    {isCreator
+                      ? `Share the room code with your partner: `
+                      : 'No messages yet. Start the conversation!'
+                    }
                   </p>
+                  {isCreator && (
+                    <div className="bg-stone-300/50 rounded-lg p-3 flex items-center justify-center gap-2">
+                      <span className="font-cinzel text-2xl tracking-[0.2em] etched-text">
+                        {sessionCodeParam}
+                      </span>
+                      <button
+                        onClick={handleCopyCode}
+                        className="p-2 rounded-lg hover:bg-stone-400/30 transition-colors"
+                      >
+                        {copied ? (
+                          <Check className="text-green-600" size={18} />
+                        ) : (
+                          <Copy className="text-stone-600" size={18} />
+                        )}
+                      </button>
+                    </div>
+                  )}
                 </StoneTablet>
               </div>
             ) : (
@@ -195,7 +253,7 @@ export default function TranslationScreen() {
                   <MessageBubble
                     key={message.id}
                     message={message}
-                    isOwn={message.from === userName}
+                    isOwn={message.from === userName || (myRole === 'A' && message.side === 'A') || (myRole === 'B' && message.side === 'B')}
                   />
                 ))}
               </AnimatePresence>
@@ -215,6 +273,7 @@ export default function TranslationScreen() {
               onKeyPress={handleKeyPress}
               className="flex-1"
               aria-label="Message input"
+              disabled={!isConnected}
             />
             <StoneButton
               onClick={handleSend}

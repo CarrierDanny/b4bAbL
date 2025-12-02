@@ -12,6 +12,26 @@ interface SendMessagePayload {
   text: string;
   from: string;
   language: Language;
+  role?: 'A' | 'B';
+}
+
+interface SessionConfig {
+  userA: string;
+  userB: string;
+  langA: string;
+  langB: string;
+  langCodeA: string;
+  langCodeB: string;
+  audiate?: boolean;
+  voiceA?: string;
+  voiceB?: string;
+}
+
+interface MessagesResponse {
+  messages: Message[];
+  lastRow: number;
+  config: SessionConfig;
+  error?: string;
 }
 
 class ApiService {
@@ -21,18 +41,15 @@ class ApiService {
     this.baseUrl = baseUrl;
   }
 
-  private async request<T>(
-    endpoint: string,
-    options: RequestInit = {}
-  ): Promise<T> {
-    const url = `${this.baseUrl}${endpoint}`;
+  private async get<T>(params: Record<string, string>): Promise<T> {
+    const searchParams = new URLSearchParams(params);
+    const url = `${this.baseUrl}?${searchParams}`;
 
     try {
       const response = await fetch(url, {
-        ...options,
+        method: 'GET',
         headers: {
-          'Content-Type': 'application/json',
-          ...options.headers,
+          'Accept': 'application/json',
         },
       });
 
@@ -42,129 +59,230 @@ class ApiService {
 
       return response.json();
     } catch (error) {
-      console.error('API request failed:', error);
+      console.error('API GET request failed:', error);
       throw error;
     }
   }
 
-  // Get audio queue
+  private async post<T>(params: Record<string, string>, body: Record<string, unknown>): Promise<T> {
+    const searchParams = new URLSearchParams(params);
+    const url = `${this.baseUrl}?${searchParams}`;
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+
+      return response.json();
+    } catch (error) {
+      console.error('API POST request failed:', error);
+      throw error;
+    }
+  }
+
+  // ===== SESSION MANAGEMENT =====
+
+  /**
+   * Create a new translation session
+   */
+  async createSession(
+    userName: string,
+    userLanguage: Language,
+    sessionCode?: string
+  ): Promise<{ success: boolean; sessionCode: string; error?: string }> {
+    return this.post(
+      { mode: 'createSession' },
+      {
+        name: userName,
+        language: this.getLanguageName(userLanguage),
+        sessionCode: sessionCode,
+        userA: userName,
+        langA: this.getLanguageName(userLanguage),
+      }
+    );
+  }
+
+  /**
+   * Join an existing session
+   */
+  async joinSession(
+    sessionCode: string,
+    userName: string,
+    userLanguage: Language
+  ): Promise<{ success: boolean; config?: SessionConfig; error?: string }> {
+    return this.post(
+      { mode: 'joinSession', session: sessionCode },
+      {
+        name: userName,
+        language: this.getLanguageName(userLanguage),
+      }
+    );
+  }
+
+  /**
+   * Get session info
+   */
+  async getSessionInfo(sessionCode: string): Promise<{
+    sessionCode: string;
+    config: SessionConfig;
+    exists: boolean;
+    error?: string;
+  }> {
+    return this.get({ mode: 'sessionInfo', session: sessionCode });
+  }
+
+  // ===== MESSAGES =====
+
+  /**
+   * Get messages from a session
+   */
+  async getMessages(
+    sessionCode: string,
+    userName: string,
+    lastRow: number = 1
+  ): Promise<Message[]> {
+    const response = await this.get<MessagesResponse>({
+      mode: 'messages',
+      session: sessionCode,
+      user: userName,
+      lastRow: lastRow.toString(),
+    });
+
+    return response.messages || [];
+  }
+
+  /**
+   * Get messages with full response (including lastRow for polling)
+   */
+  async getMessagesWithMeta(
+    sessionCode: string,
+    userName: string,
+    lastRow: number = 1
+  ): Promise<MessagesResponse> {
+    return this.get<MessagesResponse>({
+      mode: 'messages',
+      session: sessionCode,
+      user: userName,
+      lastRow: lastRow.toString(),
+    });
+  }
+
+  /**
+   * Send a message to a session
+   */
+  async sendMessage(
+    sessionCode: string,
+    payload: SendMessagePayload
+  ): Promise<{ success: boolean; row?: number; translation?: string; error?: string }> {
+    return this.post(
+      { mode: 'sendMessage', session: sessionCode },
+      {
+        text: payload.text,
+        from: payload.from,
+        language: payload.language,
+        role: payload.role,
+      }
+    );
+  }
+
+  // ===== AUDIO QUEUE =====
+
+  /**
+   * Get audio queue items
+   */
   async getAudioQueue(
-    sessionId: string,
+    sessionCode: string,
     userName: string,
     lastId: number = 0
   ): Promise<AudioQueueResponse> {
-    const params = new URLSearchParams({
+    const response = await this.get<{ items: AudioQueueResponse['queue']; error?: string }>({
       mode: 'queue',
-      session: sessionId,
+      session: sessionCode,
       to: userName,
       lastId: lastId.toString(),
     });
 
-    return this.request<AudioQueueResponse>(`?${params}`);
+    return {
+      queue: response.items || [],
+      lastId: response.items?.length
+        ? Math.max(...response.items.map((i) => i.id))
+        : lastId,
+    };
   }
 
-  // Get translation session
-  async getSession(sessionId: string): Promise<TranslationSession> {
-    const params = new URLSearchParams({
-      mode: 'session',
-      session: sessionId,
-    });
+  // ===== BABEL RESPONSES =====
 
-    return this.request<TranslationSession>(`?${params}`);
+  /**
+   * Submit a Babel response
+   */
+  async submitBabelResponse(response: Omit<BabelResponse, 'id'>): Promise<{ success: boolean }> {
+    return this.post(
+      { mode: 'babelResponse' },
+      {
+        name: response.name,
+        language: response.language,
+        response: response.response,
+        timestamp: response.timestamp,
+      }
+    );
   }
 
-  // Get messages for a session
-  async getMessages(
-    sessionId: string,
-    userName: string,
-    lastMessageId?: string
-  ): Promise<Message[]> {
-    const params = new URLSearchParams({
-      mode: 'messages',
-      session: sessionId,
-      user: userName,
-    });
-
-    if (lastMessageId) {
-      params.set('lastId', lastMessageId);
-    }
-
-    const response = await this.request<{ messages: Message[] }>(`?${params}`);
-    return response.messages || [];
-  }
-
-  // Send a message
-  async sendMessage(sessionId: string, payload: SendMessagePayload): Promise<void> {
-    const params = new URLSearchParams({
-      mode: 'message',
-      session: sessionId,
-    });
-
-    await this.request(`?${params}`, {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-  }
-
-  // Submit Babel response
-  async submitBabelResponse(response: Omit<BabelResponse, 'id'>): Promise<void> {
-    const params = new URLSearchParams({
-      mode: 'babelResponse',
-    });
-
-    await this.request(`?${params}`, {
-      method: 'POST',
-      body: JSON.stringify(response),
-    });
-  }
-
-  // Get Babel responses
+  /**
+   * Get Babel responses
+   */
   async getBabelResponses(limit: number = 20): Promise<BabelResponse[]> {
-    const params = new URLSearchParams({
+    const response = await this.get<{ responses: BabelResponse[] }>({
       mode: 'babelResponses',
       limit: limit.toString(),
     });
 
-    const response = await this.request<{ responses: BabelResponse[] }>(`?${params}`);
     return response.responses || [];
   }
 
-  // Create a new session
-  async createSession(
-    creatorName: string,
-    creatorLanguage: Language
-  ): Promise<TranslationSession> {
-    const params = new URLSearchParams({
-      mode: 'createSession',
-    });
+  // ===== HELPERS =====
 
-    return this.request<TranslationSession>(`?${params}`, {
-      method: 'POST',
-      body: JSON.stringify({
-        name: creatorName,
-        language: creatorLanguage,
-      }),
-    });
+  /**
+   * Convert language code to display name
+   */
+  private getLanguageName(code: Language): string {
+    const map: Record<Language, string> = {
+      en: 'English',
+      es: 'Spanish',
+      fr: 'French',
+      pt: 'Portuguese',
+      zh: 'Mandarin',
+      ja: 'Japanese',
+      ko: 'Korean',
+      ar: 'Arabic',
+      hi: 'Hindi',
+      de: 'German',
+      it: 'Italian',
+      ru: 'Russian',
+    };
+    return map[code] || 'English';
   }
 
-  // Join an existing session
-  async joinSession(
-    sessionId: string,
-    userName: string,
-    userLanguage: Language
-  ): Promise<TranslationSession> {
-    const params = new URLSearchParams({
-      mode: 'joinSession',
-      session: sessionId,
-    });
+  /**
+   * Check if API is configured
+   */
+  isConfigured(): boolean {
+    return !!this.baseUrl;
+  }
 
-    return this.request<TranslationSession>(`?${params}`, {
-      method: 'POST',
-      body: JSON.stringify({
-        name: userName,
-        language: userLanguage,
-      }),
-    });
+  /**
+   * Get the base URL (for debugging)
+   */
+  getBaseUrl(): string {
+    return this.baseUrl;
   }
 }
 
