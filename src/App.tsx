@@ -6,6 +6,7 @@ import {
   BabelQuestionScreen,
   StoryScreen,
   MainMenuScreen,
+  SessionSetupScreen,
   TranslationScreen,
   SettingsScreen,
 } from './components/screens';
@@ -34,6 +35,9 @@ function App() {
 
         {/* Main Menu */}
         <Route path="/menu" element={<MainMenuScreen />} />
+
+        {/* Session Setup - Create or Join */}
+        <Route path="/session" element={<SessionSetupScreen />} />
 
         {/* Translation Session */}
         <Route path="/translate" element={<TranslationScreen />} />

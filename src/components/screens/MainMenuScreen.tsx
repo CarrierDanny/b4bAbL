@@ -39,15 +39,15 @@ export default function MainMenuScreen() {
   const menuItems = [
     {
       icon: <Zap />,
-      title: 'QUICK',
+      title: 'JOIN',
       subtitle: 'SESSION',
-      onClick: () => navigate('/translate?mode=quick'),
+      onClick: () => navigate('/session?mode=quick'),
     },
     {
       icon: <Plus />,
       title: 'NEW',
       subtitle: 'SESSION',
-      onClick: () => navigate('/translate?mode=new'),
+      onClick: () => navigate('/session?mode=new'),
     },
     {
       icon: <ScrollText />,
